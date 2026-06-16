@@ -123,12 +123,12 @@ class DenseTensor:
         def get_shape(lst):
             shape = []
             cur = lst
-            while isinstance(cur, list):
+            while isinstance(cur, (list, tuple)):
                 shape.append(len(cur))
                 cur = cur[0] if len(cur) > 0 else []
             return tuple(shape)
         def flatten(lst):
-            if not isinstance(lst, list):
+            if not isinstance(lst, (list, tuple)):
                 return [float(lst)]
             result = []
             for item in lst:
