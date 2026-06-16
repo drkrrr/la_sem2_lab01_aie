@@ -69,39 +69,26 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
     for k in reversed(range(1, d)):
         core = tt.cores[k]
         r_prev, n_k, r_k = core.shape
-
-        # reshape -> (r_prev, n_k * r_k)
         mat = backend.reshape(core, (r_prev, n_k * r_k))
-
-        # QR от транспонированной
-        mat_T = backend.transpose(mat)
-
-        Q, R = backend.qr(mat_T)
-
-        new_rank = Q.shape[1]
-
-        Q_T = backend.transpose(Q)
-
-        tt.cores[k] = backend.reshape(
-            Q_T,
-            (new_rank, n_k, r_k)
+        U, S, Vt = backend.svd(mat, full_matrices=False)
+        r_new = S.shape[0]
+        new_core = backend.reshape(
+            Vt,
+            (r_new, n_k, r_k)
         )
-
+        tt.cores[k] = new_core
+        US = backend.matmul(U, backend.diag(S))
         prev_core = tt.cores[k - 1]
         r_prev2, n_prev, r_prev_old = prev_core.shape
-
         prev_mat = backend.reshape(
             prev_core,
             (r_prev2 * n_prev, r_prev_old)
         )
-
-        updated = backend.matmul(prev_mat, backend.transpose(R))
-
+        updated = backend.matmul(prev_mat, US)
         tt.cores[k - 1] = backend.reshape(
             updated,
-            (r_prev2, n_prev, new_rank)
+            (r_prev2, n_prev, r_new)
         )
-
     return TTTensor(tt.cores)
 
 
