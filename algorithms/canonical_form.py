@@ -18,41 +18,56 @@ def left_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         tt:      исходный тензор
         backend: интерфейс backend
     """
-    tt = tt.copy()
-    d = tt.order
+    cores = []
+    current = None
+    for k in range(tt.order - 1):
+        core = tt.cores[k].copy()
+        r_left, n_k, r_right = core.shape
+        if current is not None:
+            new_data = []
+            for i in range(current.shape[0]):
+                for j in range(n_k):
+                    for p in range(r_right):
+                        val = 0.0
+                        for s in range(r_left):
+                            val += current[i, s] * core[s, j, p]
+                        new_data.append(val)
+            core = DenseTensor((current.shape[0], n_k, r_right), data=new_data)
+            r_left = current.shape[0]
+        matrix = core.reshape((r_left * n_k, r_right))
+        m, n = matrix.shape
+        if m < n:
+            U, S, Vt = backend.svd(matrix)
+            rank = min(m, n)
 
-    for k in range(d - 1):
-        core = tt.cores[k]
-        r_k, n_k, r_next = core.shape
-
-        # reshape -> (r_k * n_k, r_next)
-        mat = backend.reshape(core, (r_k * n_k, r_next))
-
-        Q, R = backend.qr(mat)
-
-        new_rank = Q.shape[1]
-
-        # новое ядро
-        Q_core = backend.reshape(Q, (r_k, n_k, new_rank))
-        tt.cores[k] = Q_core
-
-        # обновляем следующее ядро
-        next_core = tt.cores[k + 1]
-        r_next_old, n_next, r_next2 = next_core.shape
-
-        next_mat = backend.reshape(
-            next_core,
-            (r_next_old, n_next * r_next2)
+            Q = _truncate_columns(U, rank)
+            R = _multiply_diag_matrix(
+                S,
+                _truncate_rows(Vt, rank),
+                rank
+            )
+        else:
+            Q, R = backend.qr(matrix)
+        new_core = Q.reshape((r_left, n_k, Q.shape[1]))
+        cores.append(new_core)
+        current = R
+    last_core = tt.cores[-1].copy()
+    if current is not None:
+        r_left, n_last, r_right = last_core.shape
+        new_data = []
+        for i in range(current.shape[0]):
+            for j in range(n_last):
+                for p in range(r_right):
+                    val = 0.0
+                    for s in range(r_left):
+                        val += current[i, s] * last_core[s, j, p]
+                    new_data.append(val)
+        last_core = DenseTensor(
+            (current.shape[0], n_last, r_right),
+            data=new_data
         )
-
-        updated = backend.matmul(R, next_mat)
-
-        tt.cores[k + 1] = backend.reshape(
-            updated,
-            (new_rank, n_next, r_next2)
-        )
-
-    return TTTensor(tt.cores)
+    cores.append(last_core)
+    return TTTensor(cores)
 
 
 def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
@@ -63,54 +78,63 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         tt:      исходный тензор
         backend: интерфейс backend
     """
-    tt = tt.copy()
     d = tt.order
-    for k in reversed(range(1, d)):
-        core = tt.cores[k]
-        r_prev, n_k, r_k = core.shape
-        mat = backend.reshape(core, (r_prev, n_k * r_k))
-        m, n = mat.shape
-        if m >= n:
-            Q, R = backend.qr(mat)
-            r_new = Q.shape[1]
-            tt.cores[k] = backend.reshape(
-                Q,
-                (r_new, n_k, r_k)
+    cores = [None] * d
+    current = None
+    for k in range(d - 1, 0, -1):
+        core = tt.cores[k].copy()
+        if current is not None:
+            new_data = []
+            for i in range(core.shape[0]):
+                for j in range(core.shape[1]):
+                    for p in range(current.shape[1]):
+                        val = 0.0
+                        for s in range(core.shape[2]):
+                            val += core[i, j, s] * current[s, p]
+                        new_data.append(val)
+            core = DenseTensor(
+                (core.shape[0], core.shape[1], current.shape[1]),
+                data=new_data
             )
-            prev_core = tt.cores[k - 1]
-            r_prev2, n_prev, r_prev_old = prev_core.shape
-            prev_mat = backend.reshape(
-                prev_core,
-                (r_prev2 * n_prev, r_prev_old)
-            )
-            updated = backend.matmul(prev_mat, R)
-            tt.cores[k - 1] = backend.reshape(
-                updated,
-                (r_prev2, n_prev, r_new)
+        r_left, n_k, r_right = core.shape
+        matrix = core.reshape((r_left, n_k * r_right))
+        matrix_t = backend.transpose(matrix)
+        m, n = matrix_t.shape
+        if m < n:
+            U, S, Vt = backend.svd(matrix_t)
+            rank = min(m, n)
+            Q_t = _truncate_columns(U, rank)
+            R_t = _multiply_diag_matrix(
+                S,
+                _truncate_rows(Vt, rank),
+                rank
             )
         else:
-            # QR от транспонированной
-            mat_T = backend.transpose(mat)
-            Q, R = backend.qr(mat_T)
-            r_new = Q.shape[1]
-            Q_T = backend.transpose(Q)
-            tt.cores[k] = backend.reshape(
-                Q_T,
-                (r_new, n_k, r_k)
-            )
-            R_T = backend.transpose(R)
-            prev_core = tt.cores[k - 1]
-            r_prev2, n_prev, r_prev_old = prev_core.shape
-            prev_mat = backend.reshape(
-                prev_core,
-                (r_prev2 * n_prev, r_prev_old)
-            )
-            updated = backend.matmul(prev_mat, R_T)
-            tt.cores[k - 1] = backend.reshape(
-                updated,
-                (r_prev2, n_prev, r_new)
-            )
-    return TTTensor(tt.cores)
+            Q_t, R_t = backend.qr(matrix_t)
+        Q = backend.transpose(Q_t)
+        R = backend.transpose(R_t)
+        new_rank = Q.shape[0]
+        cores[k] = Q.reshape((new_rank, n_k, r_right))
+        current = R
+    first_core = tt.cores[0].copy()
+    if current is not None:
+        new_data = []
+        for i in range(first_core.shape[0]):
+            for j in range(first_core.shape[1]):
+                for p in range(current.shape[1]):
+                    val = 0.0
+                    for s in range(first_core.shape[2]):
+                        val += first_core[i, j, s] * current[s, p]
+                    new_data.append(val)
+        first_core = DenseTensor(
+            (first_core.shape[0], first_core.shape[1], current.shape[1]),
+            data=new_data
+        )
+    cores[0] = first_core
+    for i in range(d):
+        if cores[i] is None:
+            cores[i] = tt.cores[i].copy()
+    return TTTensor(cores)
 
 
 # ════════════════════════════════════════════════
@@ -168,17 +192,12 @@ def _truncate_columns(
         rank:    число сохраняемых столбцов
         backend: интерфейс backend
     """
-    if rank == 0:
-        return backend.zeros((matrix.shape[0], 0))
-
     m, n = matrix.shape
-    result = backend.zeros((m, rank))
-
+    data = []
     for i in range(m):
         for j in range(rank):
-            result[i, j] = matrix[i, j]
-
-    return result
+            data.append(matrix[i, j])
+    return DenseTensor((m, rank), data=data)
 
 
 def _truncate_rows(
@@ -194,17 +213,12 @@ def _truncate_rows(
         rank:    число сохраняемых строк
         backend: интерфейс backend
     """
-    if rank == 0:
-        return backend.zeros((0, matrix.shape[1]))
-
     k, n = matrix.shape
-    result = backend.zeros((rank, n))
-
+    data = []
     for i in range(rank):
         for j in range(n):
-            result[i, j] = matrix[i, j]
-
-    return result
+            data.append(matrix[i, j])
+    return DenseTensor((rank, n), data=data)
 
 
 def _truncate_vector(
@@ -242,13 +256,13 @@ def _multiply_diag_matrix(
         rank:     длина диагонального вектора
         backend:  интерфейс backend
     """
-    result = backend.zeros(matrix.shape)
-
+    m, n = matrix.shape
+    data = []
     for i in range(rank):
-        for j in range(matrix.shape[1]):
-            result[i, j] = diag_vec[i] * matrix[i, j]
+        for j in range(n):
+            data.append(diag_vec[i] * matrix[i, j])
 
-    return result
+    return DenseTensor((rank, n), data=data)
 
 
 def _multiply_columns_by_diag(
