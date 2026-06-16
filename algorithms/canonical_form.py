@@ -69,29 +69,47 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         core = tt.cores[k]
         r_prev, n_k, r_k = core.shape
         mat = backend.reshape(core, (r_prev, n_k * r_k))
-        mat_T = backend.transpose(mat)  # (n_k*r_k, r_prev)
-        Q, R = backend.qr(mat_T)
-        # Q: (n_k*r_k, r_new)
-        # R: (r_new, r_prev)
-        r_new = Q.shape[1]
-        Q_T = backend.transpose(Q)  # (r_new, n_k*r_k)
-        new_core = backend.reshape(
-            Q_T,
-            (r_new, n_k, r_k)
-        )
-        tt.cores[k] = new_core
-        R_T = backend.transpose(R)  # (r_prev, r_new)
-        prev_core = tt.cores[k - 1]
-        r_prev2, n_prev, r_prev_old = prev_core.shape
-        prev_mat = backend.reshape(
-            prev_core,
-            (r_prev2 * n_prev, r_prev_old)
-        )
-        updated = backend.matmul(prev_mat, R_T)
-        tt.cores[k - 1] = backend.reshape(
-            updated,
-            (r_prev2, n_prev, r_new)
-        )
+        m, n = mat.shape
+        if m >= n:
+            Q, R = backend.qr(mat)
+            r_new = Q.shape[1]
+            tt.cores[k] = backend.reshape(
+                Q,
+                (r_new, n_k, r_k)
+            )
+            prev_core = tt.cores[k - 1]
+            r_prev2, n_prev, r_prev_old = prev_core.shape
+            prev_mat = backend.reshape(
+                prev_core,
+                (r_prev2 * n_prev, r_prev_old)
+            )
+            updated = backend.matmul(prev_mat, R)
+            tt.cores[k - 1] = backend.reshape(
+                updated,
+                (r_prev2, n_prev, r_new)
+            )
+        else:
+            # QR от транспонированной
+            mat_T = backend.transpose(mat)
+            Q, R = backend.qr(mat_T)
+            r_new = Q.shape[1]
+            Q_T = backend.transpose(Q)
+            tt.cores[k] = backend.reshape(
+                Q_T,
+                (r_new, n_k, r_k)
+            )
+            R_T = backend.transpose(R)
+            prev_core = tt.cores[k - 1]
+            r_prev2, n_prev, r_prev_old = prev_core.shape
+            prev_mat = backend.reshape(
+                prev_core,
+                (r_prev2 * n_prev, r_prev_old)
+            )
+            updated = backend.matmul(prev_mat, R_T)
+            tt.cores[k - 1] = backend.reshape(
+                updated,
+                (r_prev2, n_prev, r_new)
+            )
     return TTTensor(tt.cores)
 
 
