@@ -153,16 +153,20 @@ class DenseTensor:
             multi_index: кортеж индексов (i_0, i_1, ..., i_{d-1}) или целое число
         """
         if isinstance(multi_index, int):
-            if self.ndim != 1:
-                raise ValueError("Целочисленная индексация допустима только для 1D")
             multi_index = (multi_index,)
-
+        else:
+            multi_index = tuple(multi_index)
         if len(multi_index) != self.ndim:
-            raise ValueError("Неверная размерность индекса")
-        for idx, dim in zip(multi_index, self.shape):
-            if idx < 0 or idx >= dim:
-                raise IndexError("Индекс вне диапазона")
-        return tuple(multi_index)
+            raise IndexError
+        normalized = []
+        for axis, idx in enumerate(multi_index):
+            size = self.shape[axis]
+            if idx < 0:
+                idx+=size
+            if not (0 <= idx < size):
+                raise IndexError
+            normalized.append(idx)
+        return tuple(normalized)
 
     def __getitem__(self, multi_index: tuple[int, ...] | int) -> float:
         """
@@ -171,9 +175,8 @@ class DenseTensor:
         Args:
             multi_index: кортеж индексов (i_0, i_1, ..., i_{d-1}) или целое число
         """
-        multi_index = self._validate_index(multi_index)
-        flat = multi_index_to_flat(multi_index, self.strides)
-        return self.data[flat]
+        idx = self._validate_index(multi_index)
+        return self.data[multi_index_to_flat(idx, self.strides)]
 
     def __setitem__(
         self,
@@ -187,9 +190,8 @@ class DenseTensor:
             multi_index: кортеж индексов (i_0, i_1, ..., i_{d-1}) или целое число
             value:       новое значение (число)
         """
-        multi_index = self._validate_index(multi_index)
-        flat = multi_index_to_flat(multi_index, self.strides)
-        self.data[flat] = value
+        idx = self._validate_index(multi_index)
+        self.data[multi_index_to_flat(idx, self.strides)] = value
 
     # ────────────────────────────────────────────
     # Преобразования формы
@@ -202,10 +204,10 @@ class DenseTensor:
         Args:
             new_shape: кортеж новых размеров (n'_0, n'_1, ..., n'_{k-1})
         """
-        new_shape = validate_shape(new_shape)
-        if compute_size(new_shape) != self.size:
-            raise ValueError("Несовместимый размер при reshape")
-        return DenseTensor(new_shape, data=self.data.copy())
+        new_size = compute_size(new_shape)
+        if new_size != self.size:
+            raise ValueError
+        return DenseTensor(tuple(new_shape), data=self.data[:])
 
     def unfolding(self, mode: int) -> DenseTensor:
         """
@@ -214,21 +216,22 @@ class DenseTensor:
         Args:
             mode: номер моды (0 ≤ mode < ndim), которая становится индексом строк
         """
-        if mode < 0 or mode >= self.ndim:
-            raise ValueError("Неверная мода")
-        rows = self.shape[mode]
-        cols = self.size // rows
-        result = DenseTensor.zeros((rows, cols))
-        for flat_index in range(self.size):
-            multi = flat_to_multi_index(flat_index, self.shape)
+        if not (0 <= mode < self.ndim):
+            raise ValueError(f"mode={mode} за пределами [0, {self.ndim})")
+        n_rows = self.shape[mode]
+        n_cols = self.size // n_rows
+        result_data = [0.0] * (n_rows * n_cols)
+        other_modes = [m for m in range(self.ndim) if m != mode]
+        for flat in range(self.size):
+            multi = flat_to_multi_index(flat, self.shape)
             row = multi[mode]
-            col_multi = multi[:mode] + multi[mode + 1:]
-            col_strides = compute_strides(
-                self.shape[:mode] + self.shape[mode + 1:]
-            )
-            col = multi_index_to_flat(col_multi, col_strides)
-            result[row, col] = self.data[flat_index]
-        return result
+            col = 0
+            stride = 1
+            for m in reversed(other_modes):
+                col += multi[m] * stride
+                stride *= self.shape[m]
+            result_data[row * n_cols + col] = self.data[flat]
+        return DenseTensor((n_rows, n_cols), data=result_data)
 
     def left_unfolding(self, k: int) -> DenseTensor:
         """
@@ -237,12 +240,13 @@ class DenseTensor:
         Args:
             k: номер границы разбиения (0 ≤ k < ndim - 1)
         """
-
-        if k < 0 or k >= self.ndim - 1:
-            raise ValueError("Неверный параметр k")
-        left = compute_size(self.shape[:k+1])
-        right = compute_size(self.shape[k+1:])
-        return self.reshape((left, right))
+        if not (0 <= k < self.ndim - 1):
+            raise ValueError
+        left_shape = self.shape[:k + 1]
+        right_shape = self.shape[k + 1:]
+        n_rows = compute_size(left_shape)
+        n_cols = compute_size(right_shape)
+        return DenseTensor((n_rows, n_cols), data=self.data[:])
 
     # ────────────────────────────────────────────
     # Копирование
@@ -258,7 +262,7 @@ class DenseTensor:
 
     def norm(self) -> float:
         """Возвращает Фробениусову норму тензора."""
-        return math.sqrt(sum(x * x for x in self.data))
+        return math.sqrt(math.fsum([x ** 2 for x in self.data]))
 
     def __add__(self, other: DenseTensor) -> DenseTensor:
         """
@@ -268,8 +272,10 @@ class DenseTensor:
             other: t2
         """
         check_shapes_match(self.shape, other.shape)
-        data = [a + b for a, b in zip(self.data, other.data)]
-        return DenseTensor(self.shape, data=data)
+        new_tensor = self.copy()
+        for i, item in enumerate(other.data):
+            new_tensor.data[i] += item
+        return new_tensor
 
     def __sub__(self, other: DenseTensor) -> DenseTensor:
         """
@@ -279,8 +285,10 @@ class DenseTensor:
             other: t2
         """
         check_shapes_match(self.shape, other.shape)
-        data = [a - b for a, b in zip(self.data, other.data)]
-        return DenseTensor(self.shape, data=data)
+        new_tensor = self.copy()
+        for i, item in enumerate(other.data):
+            new_tensor.data[i] -= item
+        return new_tensor
 
     def __mul__(self, scalar: float | int) -> DenseTensor:
         """
@@ -289,8 +297,9 @@ class DenseTensor:
         Args:
             scalar: число
         """
-        data = [scalar * x for x in self.data]
-        return DenseTensor(self.shape, data=data)
+        new_tensor = self.copy()
+        new_tensor.data = [x * scalar for x in new_tensor.data]
+        return new_tensor
 
     def __rmul__(self, scalar: float | int) -> DenseTensor:
         """
@@ -303,7 +312,7 @@ class DenseTensor:
 
     def __neg__(self) -> DenseTensor:
         """Возвращает тензор — результат умножения тензора на -1."""
-        return self * (-1)
+        return self.__mul__(-1)
 
     # ────────────────────────────────────────────
     # Сравнение и отладка
@@ -330,7 +339,6 @@ class DenseTensor:
         """
         if self.shape != other.shape:
             return False
-
         for a, b in zip(self.data, other.data):
             if abs(a - b) > atol + rtol * max(abs(a), abs(b)):
                 return False
@@ -338,23 +346,15 @@ class DenseTensor:
 
     def to_nested_list(self) -> list:
         """Возвращает тензор в формате вложенного списка."""
-
-        def build(level, offset):
-            if level == self.ndim - 1:
-                size = self.shape[level]
-                return [
-                    self.data[offset + i]
-                    for i in range(size)
-                ]
+        def build(flat_data, shape, offset=0):
+            if len(shape) == 1:
+                return list(flat_data[offset: offset + shape[0]])
+            inner_size = compute_size(shape[1:])
             result = []
-            stride = self.strides[level]
-            for i in range(self.shape[level]):
-                result.append(
-                    build(level + 1, offset + i * stride)
-                )
+            for i in range(shape[0]):
+                result.append(build(flat_data, shape[1:], offset + i * inner_size))
             return result
-
-        return build(0, 0)
+        return build(self.data, self.shape)
     def __repr__(self) -> str:
         """
         Возвращает строковое представление тензора для отладки.
