@@ -27,7 +27,43 @@ def tt_round(
         max_rank: максимальный TT-ранг (None = без ограничения)
         eps:      относительная точность усечения
     """
-    pass
+    d = tt.order
+    tt = right_canonicalize(tt, backend)
+    cores = tt.cores.copy()
+
+    norm_tt = backend.norm(tt.full())
+    delta = eps * norm_tt / math.sqrt(d - 1) if d > 1 else 0.0
+
+    for k in range(d - 1):
+        core = cores[k]
+        r_k, n_k, r_next = core.shape
+        mat = backend.reshape(core, (r_k * n_k, r_next))
+        U, S, Vt = backend.svd(mat, full_matrices=False)
+        r = _compute_rank(S, delta, max_rank)
+        U = _truncate_columns(U, r, backend)
+        S = _truncate_vector(S, r, backend)
+        Vt = _truncate_rows(Vt, r, backend)
+
+        cores[k] = backend.reshape(U, (r_k, n_k, r))
+
+        SV = _multiply_diag_matrix(S, Vt, r, backend)
+
+        next_core = cores[k + 1]
+        r_next_old, n_next, r_next2 = next_core.shape
+
+        next_mat = backend.reshape(
+            next_core,
+            (r_next_old, n_next * r_next2)
+        )
+
+        updated = backend.matmul(SV, next_mat)
+
+        cores[k + 1] = backend.reshape(
+            updated,
+            (r, n_next, r_next2)
+        )
+
+    return TTTensor(cores)
 
 
 # ════════════════════════════════════════════════
@@ -46,9 +82,17 @@ def _compute_rank(
         S:        одномерный тензор формы (k,) — сингулярные значения
                   в порядке убывания
         delta:    абсолютный порог усечения (0 — без усечения по delta)
-        max_rank: максимально допустимый ранг (None = без ограничения)
+        max_rank: максимаъьно допустимый ранг (None = без ограничения)
     """
-    pass
+    r = 0
+    for sigma in S.data:
+        if sigma > delta:
+            r += 1
+
+    if max_rank is not None:
+        r = min(r, max_rank)
+
+    return max(r, 1)
 
 
 def _truncate_columns(
@@ -64,7 +108,14 @@ def _truncate_columns(
         rank:    число сохраняемых столбцов
         backend: интерфейс backend
     """
-    pass
+    m, n = matrix.shape
+    result = backend.zeros((m, rank))
+
+    for i in range(m):
+        for j in range(rank):
+            result[i, j] = matrix[i, j]
+
+    return result
 
 
 def _truncate_rows(
@@ -80,7 +131,14 @@ def _truncate_rows(
         rank:    число сохраняемых строк
         backend: интерфейс backend
     """
-    pass
+    k, n = matrix.shape
+    result = backend.zeros((rank, n))
+
+    for i in range(rank):
+        for j in range(n):
+            result[i, j] = matrix[i, j]
+
+    return result
 
 
 def _truncate_vector(
@@ -96,7 +154,11 @@ def _truncate_vector(
         rank:    число сохраняемых элементов
         backend: интерфейс backend
     """
-    pass
+    result = backend.zeros((rank,))
+    for i in range(rank):
+        result[i] = vector[i]
+
+    return result
 
 
 def _multiply_diag_matrix(
@@ -115,4 +177,10 @@ def _multiply_diag_matrix(
         rank:     число строк матрицы и длина диагонального вектора
         backend:  интерфейс backend
     """
-    pass
+    result = backend.zeros(matrix.shape)
+
+    for i in range(rank):
+        for j in range(matrix.shape[1]):
+            result[i, j] = diag_vec[i] * matrix[i, j]
+
+    return result
