@@ -159,21 +159,11 @@ def _numerical_rank(
         abs_tol: абсолютный допуск (по умолчанию 1e-12)
     """
     if S.ndim != 1:
-        raise ValueError("S должен быть 1D вектором")
-
+        raise ValueError('S должен быть 1D')
     if S.size == 0:
         return 0
-
-    max_sigma = max(abs(x) for x in S.data)
-
-    threshold = max(abs_tol, rel_tol * max_sigma)
-
-    rank = 0
-    for sigma in S.data:
-        if abs(sigma) > threshold:
-            rank += 1
-
-    return rank
+    threshold = max(abs_tol, rel_tol * max(abs(x) for x in S.data))
+    return sum(1 for value in S.data if abs(value) > threshold)
 
 
 def _truncate_columns(
@@ -192,12 +182,14 @@ def _truncate_columns(
         rank:    число сохраняемых столбцов
         backend: интерфейс backend
     """
-    m, n = matrix.shape
-    data = []
-    for i in range(m):
+    rows, cols = matrix.shape
+    if matrix.ndim != 2 or rank < 0 or rank > cols:
+        raise ValueError('некорр rank')
+    result = backend.zeros((rows, rank))
+    for i in range(rows):
         for j in range(rank):
-            data.append(matrix[i, j])
-    return DenseTensor((m, rank), data=data)
+            result[i, j] = matrix[i, j]
+    return result
 
 
 def _truncate_rows(
@@ -213,12 +205,14 @@ def _truncate_rows(
         rank:    число сохраняемых строк
         backend: интерфейс backend
     """
-    k, n = matrix.shape
-    data = []
+    rows, cols = matrix.shape
+    if matrix.ndim != 2 or rank < 0 or rank > rows:
+        raise ValueError('некорр rank')
+    result = backend.zeros((rank, cols))
     for i in range(rank):
-        for j in range(n):
-            data.append(matrix[i, j])
-    return DenseTensor((rank, n), data=data)
+        for j in range(cols):
+            result[i, j] = matrix[i, j]
+    return result
 
 
 def _truncate_vector(
@@ -234,10 +228,9 @@ def _truncate_vector(
         rank:    число сохраняемых элементов
         backend: интерфейс backend
     """
-    result = backend.zeros((rank,))
-    for i in range(rank):
-        result[i] = vector[i]
-    return result
+    if vector.ndim != 1 or rank < 0 or rank > vector.shape[0]:
+        raise ValueError('некорр rank')
+    return DenseTensor((rank,), data=vector.data[:rank])
 
 
 def _multiply_diag_matrix(
@@ -256,13 +249,12 @@ def _multiply_diag_matrix(
         rank:     длина диагонального вектора
         backend:  интерфейс backend
     """
-    m, n = matrix.shape
-    data = []
+    cols = matrix.shape[1]
+    result = backend.zeros((rank, cols))
     for i in range(rank):
-        for j in range(n):
-            data.append(diag_vec[i] * matrix[i, j])
-
-    return DenseTensor((rank, n), data=data)
+        for j in range(cols):
+            result[i, j] = diag_vec.data[i] * matrix[i, j]
+    return result
 
 
 def _multiply_columns_by_diag(
@@ -279,11 +271,11 @@ def _multiply_columns_by_diag(
         diag_vec: одномерный тензор формы (rank,), содержащий диагональные элементы
         backend:  интерфейс backend
     """
-    m, n = matrix.shape
-    result = backend.zeros((m, n))
-
-    for i in range(m):
-        for j in range(n):
-            result[i, j] = matrix[i, j] * diag_vec[j]
-
+    rows, cols = matrix.shape
+    if diag_vec.shape[0] != cols:
+        raise ValueError
+    result = backend.zeros((rows, cols))
+    for i in range(rows):
+        for j in range(cols):
+            result[i, j] = matrix[i, j] * diag_vec.data[j]
     return result
